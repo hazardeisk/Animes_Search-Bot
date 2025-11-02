@@ -1467,6 +1467,7 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
         [InlineKeyboardButton("👤 Mon Profil", callback_data="profile_main")]
     ]
     reply_markup = InlineKeyboardMarkup(keyboard)
+    # Correction : Utilisation de code HTML correct pour les balises
     welcome_text = (
         "👋 Bonjour ! Je suis votre assistant pour découvrir des animes.\n"
         "✨ <b>Fonctionnalités :</b>\n"
