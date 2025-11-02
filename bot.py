@@ -1462,14 +1462,15 @@ def create_similar_animes_keyboard(similar_animes, original_anime_id):
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user = update.message.from_user
     db.add_user(user.id, user.username, user.first_name, user.last_name, user.language_code)
+    
     keyboard = [
         [InlineKeyboardButton("🔍 Rechercher un anime", switch_inline_query_current_chat="")],
         [InlineKeyboardButton("👤 Mon Profil", callback_data="profile_main")]
     ]
     reply_markup = InlineKeyboardMarkup(keyboard)
-    # Correction : Utilisation de code HTML correct pour les balises
+
     welcome_text = (
-        "👋 Bonjour ! Je suis votre assistant pour découvrir des animes.\n"
+        "👋 Bonjour ! Je suis votre assistant pour découvrir des animes.\n\n"
         "✨ <b>Fonctionnalités :</b>\n"
         "• 🔍 Recherche d'animes avec navigation interactive\n"
         "• 📝 Synopsis détaillés et traduits\n"
@@ -1480,47 +1481,47 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "• 🏆 Top animes\n"
         "• 🎲 Anime aléatoire\n"
         "• 📅 Planning des sorties\n"
-        "• 👥 Fonctionne dans les groupes et en privé\n"
+        "• 👥 Fonctionne dans les groupes et en privé\n\n"
         "💡 <b>Nouvelles fonctionnalités :</b>\n"
         "• ❤️ Système de favoris et listes personnalisées\n"
         "• 📊 Statistiques personnelles\n"
         "• 🏆 Système d'achievements\n"
-        "• 🎯 Recommandations personnalisées\n"
+        "• 🎯 Recommandations personnalisées\n\n"
         "💡 <b>Commandes disponibles :</b>\n"
         "• Tapez le nom d'un anime pour le rechercher\n"
-        "• <code>/saison <année> <saison></code> (ex : <code>/saison 2023 fall</code>)\n"
-        "• <code>/personnage <nom></code> (ex : <code>/personnage Naruto</code>)\n"
+        "• <code>/saison &lt;année&gt; &lt;saison&gt;</code> (ex : <code>/saison 2023 fall</code>)\n"
+        "• <code>/personnage &lt;nom&gt;</code> (ex : <code>/personnage Naruto</code>)\n"
         "• <code>/top</code> - Liste des meilleurs animes\n"
         "• <code>/random</code> - Anime aléatoire\n"
         "• <code>/planning</code> - Planning des sorties\n"
         "• <code>/profil</code> - Votre profil utilisateur\n"
-        "• <code>/anime <nom></code> ou <code>/recherche <nom></code>"
+        "• <code>/anime &lt;nom&gt;</code> ou <code>/recherche &lt;nom&gt;</code>"
     )
     await update.message.reply_text(welcome_text, parse_mode="HTML", reply_markup=reply_markup)
 
 async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     help_text = (
-        "🤖 <b>Aide - Bot Anime</b>\n"
+        "🤖 <b>Aide - Bot Anime</b>\n\n"
         "🔍 <b>Recherche d'animes :</b>\n"
         "• Tapez le nom d'un anime\n"
-        "• <code>/recherche <nom></code> ou <code>/anime <nom></code>\n"
+        "• <code>/recherche &lt;nom&gt;</code> ou <code>/anime &lt;nom&gt;</code>\n\n"
         "📅 <b>Recherche par saison :</b>\n"
-        "• <code>/saison <année> <saison></code> (spring, summer, fall, winter)\n"
-        "• ex : <code>/saison 2023 fall</code>\n"
+        "• <code>/saison &lt;année&gt; &lt;saison&gt;</code> (spring, summer, fall, winter)\n"
+        "• ex : <code>/saison 2023 fall</code>\n\n"
         "👤 <b>Recherche de personnages :</b>\n"
-        "• <code>/personnage <nom></code>\n"
-        "• ex : <code>/personnage Naruto</code>\n"
+        "• <code>/personnage &lt;nom&gt;</code>\n"
+        "• ex : <code>/personnage Naruto</code>\n\n"
         "🏆 <b>Top animes :</b>\n"
-        "• <code>/top</code> - Liste des meilleurs animes\n"
+        "• <code>/top</code> - Liste des meilleurs animes\n\n"
         "🎲 <b>Anime aléatoire :</b>\n"
-        "• <code>/random</code> - Découvrir un anime au hasard\n"
+        "• <code>/random</code> - Découvrir un anime au hasard\n\n"
         "📅 <b>Planning des sorties :</b>\n"
-        "• <code>/planning</code> - Voir les sorties de la semaine\n"
+        "• <code>/planning</code> - Voir les sorties de la semaine\n\n"
         "👤 <b>Profil utilisateur :</b>\n"
-        "• <code>/profil</code> - Gérer vos listes et voir vos stats\n"
+        "• <code>/profil</code> - Gérer vos listes et voir vos stats\n\n"
         "🎯 <b>Navigation interactive :</b>\n"
         "• Boutons : Synopsis, Détails, Studio, Trailer, Personnages, Similaires, Streaming\n"
-        "• Nouveau : Favoris, Listes de visionnage, Progression\n"
+        "• Nouveau : Favoris, Listes de visionnage, Progression\n\n"
         "👥 <b>Groupes :</b>\n"
         "• Mentionne-moi puis écris le nom de l'anime"
     )
