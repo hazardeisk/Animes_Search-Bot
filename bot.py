@@ -52,9 +52,9 @@ STREAMING_SITES = [
     },
     {
         "name": "Anime-Sama",
-        "base_url": "https://www.anime-sama.fr",
-        "search_url": "https://www.anime-sama.fr/search/?q={query}",
-        "anime_url": "https://www.anime-sama.fr/anime/{slug}"
+        "base_url": "https://www.anime-sama.org",
+        "search_url": "https://www.anime-sama.org/search/?q={query}",
+        "anime_url": "https://www.anime-sama.org/anime/{slug}"
     },
     {
         "name": "French-Anime",
