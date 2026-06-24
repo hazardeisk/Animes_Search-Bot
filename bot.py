@@ -179,6 +179,7 @@ class AnimeDatabase:
                 duration TEXT,
                 rating TEXT,
                 source TEXT,
+                trailer_url TEXT,
                 cached_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
             )
         ''')
@@ -439,8 +440,8 @@ class AnimeDatabase:
         """Met en cache les données d'un anime"""
         conn = sqlite3.connect(self.db_path)
         cursor = conn.cursor()
-        # Convertir les listes en JSON pour le stockage
-        genres_json = json.dumps([g['name'] for g in anime_data.get('genres', [])])
+        # Convertir les listes en JSON pour le stockage — conserver mal_id pour les genres
+        genres_json = json.dumps([{'mal_id': g.get('mal_id'), 'name': g.get('name', '')} for g in anime_data.get('genres', [])])
         studios_json = json.dumps([s['name'] for s in anime_data.get('studios', [])])
         producers_json = json.dumps([p['name'] for p in anime_data.get('producers', [])])
         # Gérer les images correctement
@@ -448,11 +449,20 @@ class AnimeDatabase:
         image_url = None
         if images.get('jpg'):
             image_url = images['jpg'].get('large_image_url') or images['jpg'].get('image_url')
+        # Récupérer l'URL du trailer
+        trailer = anime_data.get('trailer', {}) or {}
+        trailer_url = trailer.get('url') or trailer.get('embed_url')
+        # Ajouter la colonne trailer_url si elle n'existe pas (migration)
+        try:
+            cursor.execute("ALTER TABLE anime_cache ADD COLUMN trailer_url TEXT")
+            conn.commit()
+        except sqlite3.OperationalError:
+            pass  # Colonne déjà présente
         cursor.execute('''
             INSERT OR REPLACE INTO anime_cache 
             (anime_id, title, title_japanese, title_english, image_url, synopsis, 
-             score, episodes, status, year, genres, studios, producers, duration, rating, source)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+             score, episodes, status, year, genres, studios, producers, duration, rating, source, trailer_url)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         ''', (
             anime_data.get('mal_id'),
             anime_data.get('title'),
@@ -469,7 +479,8 @@ class AnimeDatabase:
             producers_json,
             anime_data.get('duration'),
             anime_data.get('rating'),
-            anime_data.get('source')
+            anime_data.get('source'),
+            trailer_url
         ))
         conn.commit()
         conn.close()
@@ -484,7 +495,18 @@ class AnimeDatabase:
         row = cursor.fetchone()
         conn.close()
         if row:
-            # Reconstruire l'objet anime à partir des données en cache
+            # row[16] = trailer_url (peut être absent sur anciens enregistrements)
+            trailer_url = row[16] if len(row) > 16 else None
+            # Genres avec mal_id préservé (format JSON: [{"mal_id": x, "name": "..."}])
+            try:
+                genres_data = json.loads(row[10])
+                # Compatibilité avec l'ancien format (liste de strings)
+                if genres_data and isinstance(genres_data[0], str):
+                    genres = [{'mal_id': None, 'name': name} for name in genres_data]
+                else:
+                    genres = genres_data
+            except (json.JSONDecodeError, IndexError):
+                genres = []
             return {
                 'mal_id': row[0],
                 'title': row[1],
@@ -496,12 +518,13 @@ class AnimeDatabase:
                 'episodes': row[7],
                 'status': row[8],
                 'year': row[9],
-                'genres': [{'name': name} for name in json.loads(row[10])],
+                'genres': genres,
                 'studios': [{'name': name} for name in json.loads(row[11])],
                 'producers': [{'name': name} for name in json.loads(row[12])],
                 'duration': row[13],
                 'rating': row[14],
-                'source': row[15]
+                'source': row[15],
+                'trailer': {'url': trailer_url} if trailer_url else {},
             }
         return None
 
@@ -651,10 +674,21 @@ def get_personal_recommendations(user_id, limit=5):
                 genre_counter[genre_name] = genre_counter.get(genre_name, 0) + 1
     # Obtenir les genres les plus populaires
     top_genres = sorted(genre_counter.items(), key=lambda x: x[1], reverse=True)[:3]
-    # Rechercher des animes similaires
+    # Rechercher des animes similaires en utilisant les IDs de genres
+    # Construire un mapping nom→mal_id depuis les animes en cache
+    genre_id_map = {}
+    for anime_id in all_anime_ids:
+        anime = db.get_cached_anime(anime_id) or get_anime_by_id(anime_id)
+        if anime:
+            for g in anime.get('genres', []):
+                if g.get('mal_id') and g.get('name'):
+                    genre_id_map[g['name']] = g['mal_id']
     recommendations = []
-    for genre, _ in top_genres:
-        genre_recommendations = search_anime_by_genre(genre, limit=limit)
+    for genre_name, _ in top_genres:
+        genre_id = genre_id_map.get(genre_name)
+        if not genre_id:
+            continue
+        genre_recommendations = search_anime_by_genre(genre_id, limit=limit)
         for rec in genre_recommendations:
             if rec['mal_id'] not in all_anime_ids and rec['mal_id'] not in [r['mal_id'] for r in recommendations]:
                 recommendations.append(rec)
@@ -672,9 +706,9 @@ def get_personal_recommendations(user_id, limit=5):
                     break
     return recommendations[:limit]
 
-def search_anime_by_genre(genre, limit=10):
-    """Recherche des animes par genre"""
-    url = f"https://api.jikan.moe/v4/anime?genres={genre}&limit={limit}"
+def search_anime_by_genre(genre_id, limit=10):
+    """Recherche des animes par genre ID (Jikan attend un entier, pas un nom)"""
+    url = f"https://api.jikan.moe/v4/anime?genres={genre_id}&limit={limit}&order_by=score&sort=desc"
     try:
         r = requests.get(url, timeout=10)
         if r.status_code == 200:
@@ -817,13 +851,29 @@ def get_anime_characters(anime_id):
         logger.error(f"Erreur de connexion (anime characters): {e}")
     return []
 
-def get_anime_recommendations(genres, exclude_id, limit=5):
-    # Correction : utiliser les noms de genres pour la recherche
-    # Jikan ne permet pas de filtrer directement par genre ID
-    # On utilise une recherche par mots-clés ou on fait une requête par genre
-    # Pour simplifier, on ne fait pas de recherche basée sur les genres
-    # On renvoie une liste vide pour éviter KeyError
-    logger.warning(f"Recommandations par genre non implémentées correctement (mal_id manquant dans {genres})")
+def get_anime_recommendations(anime_id, limit=5):
+    """Récupère les animes similaires via l'endpoint officiel Jikan /recommendations"""
+    url = f"https://api.jikan.moe/v4/anime/{anime_id}/recommendations"
+    try:
+        r = requests.get(url, timeout=10)
+        if r.status_code == 200:
+            data = r.json()
+            recs = []
+            for item in data.get("data", []):
+                entry = item.get("entry", {})
+                if entry and entry.get("mal_id"):
+                    recs.append({
+                        'mal_id': entry['mal_id'],
+                        'title': entry.get('title', 'Titre inconnu'),
+                        'images': entry.get('images', {}),
+                        'url': entry.get('url', ''),
+                    })
+                    if len(recs) >= limit:
+                        break
+            return recs
+        logger.error(f"Erreur API Jikan (recommendations): {r.status_code}")
+    except requests.exceptions.RequestException as e:
+        logger.error(f"Erreur de connexion (recommendations): {e}")
     return []
 
 def get_top_anime(filter_type="all", page=1, limit=10):
@@ -1772,6 +1822,22 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 if results:
                     keyboard = create_search_pagination_keyboard(results, page, search_query, "character")
                     await query.edit_message_reply_markup(reply_markup=keyboard)
+    elif data.startswith("anime_chars_"):
+        # Afficher les personnages d'un anime (doit être AVANT anime_ pour éviter le catch erroné)
+        anime_id = data.split("_")[2]
+        anime = get_anime_by_id(anime_id)
+        if anime:
+            characters = get_anime_characters(anime_id)
+            if characters:
+                context.user_data[f"anime_chars_{anime_id}"] = characters
+                anime_title = anime.get("title", "Cet anime")
+                list_text = format_anime_characters_list(anime_title, characters)
+                keyboard = create_characters_list_keyboard(characters, anime_id, 0)
+                await query.message.reply_text(list_text, parse_mode="HTML", reply_markup=keyboard)
+            else:
+                await query.message.reply_text("❌ Aucun personnage trouvé pour cet anime.", parse_mode="HTML")
+        else:
+            await query.message.reply_text("❌ Impossible de charger les personnages.", parse_mode="HTML")
     elif data.startswith("anime_"):
         anime_id = data.split("_")[1]
         anime = get_anime_by_id(anime_id)
@@ -1839,26 +1905,25 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 )
         else:
             await query.message.reply_text("❌ Impossible de charger le trailer.", parse_mode="HTML")
+
     elif data.startswith("similar_"):
         anime_id = int(data.split("_")[1])
         anime = get_anime_by_id(anime_id)
-        # Correction : Vérifier que les genres sont accessibles
-        if anime and anime.get("genres"):
-            # Utiliser une fonction de recommandation simplifiée
-            recs = get_anime_recommendations(anime["genres"], anime_id, 5)
+        if anime:
+            recs = get_anime_recommendations(anime_id, 5)
             if recs:
                 titre_original = escape_html(decode_html_entities(anime.get("title", "Cet anime")))
                 reply_markup = create_similar_animes_keyboard(recs, anime_id)
                 await query.message.reply_text(
-                    f"🎯 <b>Animes similaires à {titre_original}</b>:\nBasé sur des genres proches :",
+                    f"🎯 <b>Animes similaires à {titre_original}</b>:\nBasé sur les recommandations MyAnimeList :",
                     parse_mode="HTML",
                     reply_markup=reply_markup,
                 )
             else:
                 reply_markup = create_back_button_keyboard(anime_id)
                 await query.message.reply_text(
-                    "❌ Aucune recommandation trouvée.", 
-                    parse_mode="HTML", 
+                    "❌ Aucune recommandation trouvée pour cet anime.",
+                    parse_mode="HTML",
                     reply_markup=reply_markup
                 )
         else:
@@ -1905,23 +1970,6 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         text = format_schedule(schedule, day)
         keyboard = create_schedule_keyboard()
         await query.edit_message_text(text, parse_mode="HTML", reply_markup=keyboard)
-    elif data.startswith("anime_chars_"):
-        # Afficher les personnages d'un anime
-        anime_id = data.split("_")[2]
-        anime = get_anime_by_id(anime_id)
-        if anime:
-            characters = get_anime_characters(anime_id)
-            if characters:
-                # Stocker les personnages dans le contexte pour la pagination
-                context.user_data[f"anime_chars_{anime_id}"] = characters
-                anime_title = anime.get("title", "Cet anime")
-                list_text = format_anime_characters_list(anime_title, characters)
-                keyboard = create_characters_list_keyboard(characters, anime_id, 0)
-                await query.message.reply_text(list_text, parse_mode="HTML", reply_markup=keyboard)
-            else:
-                await query.message.reply_text("❌ Aucun personnage trouvé pour cet anime.", parse_mode="HTML")
-        else:
-            await query.message.reply_text("❌ Impossible de charger les personnages.", parse_mode="HTML")
     elif data.startswith("chars_page_"):
         # Pagination pour la liste des personnages
         parts = data.split("_")
