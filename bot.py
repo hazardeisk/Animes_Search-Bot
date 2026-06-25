@@ -8,6 +8,8 @@ import random
 import asyncio
 import sqlite3
 import json
+import threading
+from http.server import HTTPServer, BaseHTTPRequestHandler
 from datetime import datetime
 from urllib.parse import quote, urlencode
 from typing import Dict, List, Set, Optional
@@ -45,35 +47,35 @@ TOKEN = os.getenv("TOKEN")
 # ──────────────────────────
 STREAMING_SITES = [
     {
-        "name": "VoirAnime",
-        "base_url": "https://voiranime.com",
-        "search_url": "https://voiranime.com/?s={query}",
-        "anime_url": "https://voiranime.com/anime/{slug}"
+        "name": "🎌 Voir-Anime",
+        "base_url": "https://voir-anime.to",
+        "search_url": "https://voir-anime.to/?s={query}",
+        "anime_url": "https://voir-anime.to/anime/{slug}"
     },
     {
-        "name": "Anime-Sama",
-        "base_url": "https://www.anime-sama.org",
-        "search_url": "https://www.anime-sama.org/search/?q={query}",
-        "anime_url": "https://www.anime-sama.org/anime/{slug}"
+        "name": "⚡ Anime-Sama",
+        "base_url": "https://anime-sama.fr",
+        "search_url": "https://anime-sama.fr/catalogue/?search={query}",
+        "anime_url": "https://anime-sama.fr/catalogue/{slug}/"
     },
     {
-        "name": "French-Anime",
+        "name": "🐉 Esprit Donghua",
+        "base_url": "https://www.esprit-donghua.fr",
+        "search_url": "https://www.esprit-donghua.fr/?s={query}",
+        "anime_url": "https://www.esprit-donghua.fr/anime/{slug}"
+    },
+    {
+        "name": "🎏 French-Anime",
         "base_url": "https://french-anime.com",
-        "search_url": "https://french-anime.com/search?q={query}",
+        "search_url": "https://french-anime.com/?s={query}",
         "anime_url": "https://french-anime.com/anime/{slug}"
     },
     {
-        "name": "Franime",
+        "name": "🌸 Franime",
         "base_url": "https://franime.fr",
         "search_url": "https://franime.fr/?s={query}",
         "anime_url": "https://franime.fr/anime/{slug}"
     },
-    {
-        "name": "Anime-Ultime",
-        "base_url": "https://www.anime-ultime.net",
-        "search_url": "https://www.anime-ultime.net/search-0-0-{query}.html",
-        "anime_url": "https://www.anime-ultime.net/anime-{id}-0/infos.html"
-    }
 ]
 
 # Configuration Nautiljon
@@ -1847,13 +1849,55 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
             await query.message.reply_text("❌ Erreur lors du chargement des détails de l'anime.", parse_mode="HTML")
     elif data.startswith("character_"):
         character_id = data.split("_")[1]
+        character = None
+        # 1. Chercher dans les résultats de recherche de personnages
         for key, results in context.user_data.items():
-            if key.startswith("character_results_"):
-                character = next((c for c in results if c["mal_id"] == int(character_id)), None)
-                if character:
-                    await display_character_info(query, character)
-                    return
-        await query.message.reply_text("❌ Erreur lors du chargement des détails du personnage.", parse_mode="HTML")
+            if key.startswith("character_results_") and isinstance(results, list):
+                found = next((c for c in results if str(c.get("mal_id")) == character_id), None)
+                if found:
+                    character = found
+                    break
+        # 2. Chercher dans les listes de personnages d'animes
+        if not character:
+            for key, chars in context.user_data.items():
+                if key.startswith("anime_chars_") and isinstance(chars, list):
+                    for c in chars:
+                        char_data = c.get("character", {})
+                        if str(char_data.get("mal_id")) == character_id:
+                            # Reconstruire un objet compatible display_character_info
+                            character = char_data
+                            character["voices"] = c.get("voice_actors", [])
+                            break
+                    if character:
+                        break
+        # 3. Fallback : appel API direct
+        if not character:
+            character = get_character_by_id(character_id)
+        if character:
+            # Trouver l'anime d'origine pour le bouton retour
+            anime_id = None
+            for key in context.user_data:
+                if key.startswith("anime_chars_"):
+                    anime_id = key.split("anime_chars_")[1]
+                    break
+            if anime_id:
+                reply_markup = InlineKeyboardMarkup([
+                    [InlineKeyboardButton("🔙 Retour aux personnages", callback_data=f"anime_chars_{anime_id}")]
+                ])
+            else:
+                reply_markup = None
+            nautiljon_data = get_nautiljon_character_info(character.get("name", ""))
+            info_text = format_character_info(character, nautiljon_data)
+            images = character.get("images", {})
+            image_url = None
+            if images.get("jpg"):
+                image_url = images["jpg"].get("image_url")
+            if image_url:
+                await query.message.reply_photo(photo=image_url, caption=info_text, parse_mode="HTML", reply_markup=reply_markup)
+            else:
+                await query.message.reply_text(info_text, parse_mode="HTML", reply_markup=reply_markup)
+        else:
+            await query.message.reply_text("❌ Erreur lors du chargement des détails du personnage.", parse_mode="HTML")
     elif data.startswith("synopsis_"):
         anime_id = data.split("_")[1]
         anime = get_anime_by_id(anime_id)
@@ -1972,9 +2016,10 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await query.edit_message_text(text, parse_mode="HTML", reply_markup=keyboard)
     elif data.startswith("chars_page_"):
         # Pagination pour la liste des personnages
+        # Format: chars_page_{anime_id}_{page} → parts = ['chars','page', anime_id, page]
         parts = data.split("_")
-        anime_id = parts[3]
-        page = int(parts[4])
+        anime_id = parts[2]
+        page = int(parts[3])
         characters = context.user_data.get(f"anime_chars_{anime_id}", [])
         if characters:
             anime = get_anime_by_id(anime_id)
@@ -1984,43 +2029,6 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
             await query.edit_message_text(list_text, parse_mode="HTML", reply_markup=keyboard)
         else:
             await query.answer("❌ Données de personnages non disponibles.")
-    elif data.startswith("character_"):
-        # Afficher les détails d'un personnage (version améliorée)
-        character_id = data.split("_")[1]
-        character = get_character_by_id(character_id)
-        if character:
-            # Pour le bouton retour, on essaie de trouver l'anime d'origine
-            anime_id = None
-            for key in context.user_data:
-                if key.startswith("anime_chars_"):
-                    anime_id = key.split("_")[2]
-                    break
-            if anime_id:
-                reply_markup = InlineKeyboardMarkup([
-                    [InlineKeyboardButton("🔙 Retour aux personnages", callback_data=f"anime_chars_{anime_id}")]
-                ])
-            else:
-                reply_markup = None
-            # Récupérer les données Nautiljon pour enrichir la description
-            character_name = character.get("name", "")
-            nautiljon_data = get_nautiljon_character_info(character_name)
-            info_text = format_character_info(character, nautiljon_data)
-            # Gérer correctement l'URL de l'image
-            images = character.get("images", {})
-            image_url = None
-            if images.get('jpg'):
-                image_url = images['jpg'].get('image_url')
-            if image_url:
-                await query.message.reply_photo(
-                    photo=image_url, 
-                    caption=info_text, 
-                    parse_mode="HTML", 
-                    reply_markup=reply_markup
-                )
-            else:
-                await query.message.reply_text(info_text, parse_mode="HTML", reply_markup=reply_markup)
-        else:
-            await query.message.reply_text("❌ Erreur lors du chargement des détails du personnage.", parse_mode="HTML")
     # Gestion des favoris
     elif data.startswith("fav_"):
         anime_id = int(data.split("_")[1])
@@ -2297,11 +2305,30 @@ async def error_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         pass
 
 # ──────────────────────────
-# Lancement
+# Health-check HTTP (requis par Render Web Service)
 # ──────────────────────────
+class _HealthHandler(BaseHTTPRequestHandler):
+    def do_GET(self):
+        self.send_response(200)
+        self.send_header("Content-Type", "text/plain")
+        self.end_headers()
+        self.wfile.write(b"OK")
+    def log_message(self, format, *args):
+        pass  # Silencer les logs HTTP inutiles
+
+def _run_health_server():
+    port = int(os.getenv("PORT", 10000))
+    server = HTTPServer(("0.0.0.0", port), _HealthHandler)
+    logger.info(f"Health-check HTTP démarré sur le port {port}")
+    server.serve_forever()
+
+
 def main():
     if not TOKEN:
         raise RuntimeError("La variable d'environnement TOKEN est manquante.")
+    # Démarrer le serveur HTTP health-check en arrière-plan (Render détecte un port ouvert)
+    health_thread = threading.Thread(target=_run_health_server, daemon=True)
+    health_thread.start()
     app = Application.builder().token(TOKEN).build()
     # Commandes
     app.add_handler(CommandHandler("start", start))
